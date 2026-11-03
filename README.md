@@ -62,9 +62,36 @@ cat /sys/class/leds/smc::kbd_backlight/brightness          # 120
 
 With `brightnessctl`: `sudo brightnessctl -d smc::kbd_backlight set 50%`.
 
-KDE caches its device list; if the backlight slider or F5/F6 still do nothing
-with the LED present, `systemctl --user restart plasma-powerdevil` (or re-login)
-refreshes it.
+## F5/F6 keys
+
+Having the LED is not enough: something has to translate `KEY_KBDILLUMDOWN` and
+`KEY_KBDILLUMUP` (what the Apple keyboard emits) into LED writes. Desktop
+environments do that for hardware they know; a bare compositor does not, and
+then the keys do nothing.
+
+`smckbd-keys` is a small root daemon for that. It reads the internal keyboard
+read-only (it does not grab it, so the compositor keeps the keys), steps the
+backlight by 32 on each press, and toggles on `KEY_KBDILLUMTOGGLE`.
+
+```sh
+sudo systemctl start smckbd-keys.service     # installed and enabled by the package
+```
+
+Without the package, from a build tree:
+
+```sh
+make keys && sudo ./smckbd-keys
+```
+
+If pressing F5/F6 still does nothing, check the keys reach userspace:
+
+```sh
+sudo evtest /dev/input/event4      # the event node with the Apple keyboard name
+```
+
+`KEY_KBDILLUMDOWN` / `KEY_KBDILLUMUP` on a press means the daemon will handle
+them; `KEY_F5` / `KEY_F6` means the keyboard is in plain-function mode (try Fn,
+or adjust `hid_apple.fnmode`).
 
 ## Notes
 

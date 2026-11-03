@@ -10,7 +10,7 @@ pkgdesc="DKMS module exposing the keyboard backlight as smc::kbd_backlight on ma
 arch=('x86_64')
 url="https://github.com/eahmed234/smckbd"
 license=('GPL-2.0-only')
-depends=('dkms')
+depends=('dkms' 'glibc')
 makedepends=('git')
 provides=('smckbd')
 conflicts=('smckbd-dkms')
@@ -25,6 +25,11 @@ pkgver() {
   printf 'r%s.%s' \
     "$(git rev-list --count HEAD)" \
     "$(git rev-parse --short=7 HEAD)"
+}
+
+build() {
+  cd "$_srcname"
+  make keys
 }
 
 package() {
@@ -47,7 +52,10 @@ BUILD_EXCLUSIVE_KERNEL_MIN="7.3"
 EOF
   sed -i "s/@PKGVER@/$pkgver/" "$_dst/dkms.conf"
 
+  install -Dm755 smckbd-keys "$pkgdir/usr/bin/smckbd-keys"
   install -Dm644 smckbd.service \
     "$pkgdir/usr/lib/systemd/system/smckbd.service"
+  install -Dm644 smckbd-keys.service \
+    "$pkgdir/usr/lib/systemd/system/smckbd-keys.service"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

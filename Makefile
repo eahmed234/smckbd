@@ -15,5 +15,12 @@ endif
 all:
 	$(MAKE) -C $(KBUILD_DIR) M=$(CURDIR) $(TOOLCHAIN)
 
+# Userspace helper for the F5/F6 illumination keys.
+keys: smckbd-keys
+
+smckbd-keys: smckbd-keys.c
+	$(CC) -O2 -Wall -Wextra -o $@ $<
+
 clean:
 	$(MAKE) -C $(KBUILD_DIR) M=$(CURDIR) clean
+	rm -f smckbd-keys

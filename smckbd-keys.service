@@ -1,0 +1,12 @@
+[Unit]
+Description=Apple keyboard backlight keys (smc::kbd_backlight)
+ConditionPathExists=/sys/class/leds/smc::kbd_backlight
+After=smckbd.service
+
+[Service]
+ExecStart=/usr/bin/smckbd-keys
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

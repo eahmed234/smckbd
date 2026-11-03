@@ -3,9 +3,11 @@ post_install() {
 smckbd is built by DKMS for every installed kernel 7.3 and newer. Older
 kernels keep applesmc, which already provides smc::kbd_backlight.
 
-The unit is enabled but not started here: the DKMS hook may not have built the
-module yet. Start it once, or reboot:
-  sudo systemctl start smckbd.service
+The units are enabled but not started here: the DKMS hook may not have built
+the module yet. Start them once, or reboot:
+  sudo systemctl start smckbd.service smckbd-keys.service
+
+smckbd-keys is the daemon behind the F5/F6 keys; it needs smckbd loaded.
 
 Check it:
   ls -l /sys/class/leds/ | grep kbd_backlight
@@ -13,7 +15,7 @@ Check it:
 EOF
 
   if [ -d /run/systemd/system ]; then
-    systemctl enable smckbd.service >/dev/null 2>&1 || true
+    systemctl enable smckbd.service smckbd-keys.service >/dev/null 2>&1 || true
   fi
 }
 
@@ -23,6 +25,6 @@ post_upgrade() {
 
 pre_remove() {
   if [ -d /run/systemd/system ]; then
-    systemctl disable --now smckbd.service >/dev/null 2>&1 || true
+    systemctl disable --now smckbd.service smckbd-keys.service >/dev/null 2>&1 || true
   fi
 }
