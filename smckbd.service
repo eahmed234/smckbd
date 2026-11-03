@@ -1,0 +1,15 @@
+[Unit]
+Description=Load smckbd (macsmc keyboard backlight alias)
+Documentation=https://github.com/eahmed234/smckbd
+# Only machines where macsmc registered the keyboard backlight. Kernels older
+# than 7.3 use applesmc, which already provides smc::kbd_backlight.
+ConditionPathExists=/sys/class/leds/macsmc-led
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/modprobe -q smckbd
+
+[Install]
+WantedBy=multi-user.target
