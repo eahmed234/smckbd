@@ -57,5 +57,7 @@ EOF
     "$pkgdir/usr/lib/systemd/system/smckbd.service"
   install -Dm644 smckbd-keys.service \
     "$pkgdir/usr/lib/systemd/system/smckbd-keys.service"
+  install -Dm644 80-smckbd-led.rules \
+    "$pkgdir/usr/lib/udev/rules.d/80-smckbd-led.rules"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

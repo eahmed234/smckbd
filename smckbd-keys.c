@@ -9,9 +9,17 @@
  * nothing, so F5/F6 are dead even though the keyboard emits KEY_KBDILLUMDOWN
  * and KEY_KBDILLUMUP.
  *
- * This daemon reads the internal keyboard (read-only, it does not grab the
- * device, so the compositor keeps receiving the keys) and adjusts the LED.
- * It needs root: /dev/input/event* and the LED brightness file are root-only.
+ * Two modes:
+ *
+ *   smckbd-keys                 daemon: watch the keyboard and act on every
+ *                               press. Runs as root (system service).
+ *   smckbd-keys up|down|toggle  one shot: apply a single step and exit, for
+ *                               compositor key bindings (XF86KbdBrightnessUp /
+ *                               Down). Works as a normal user once the udev rule
+ *                               gives the video group write access.
+ *
+ * The daemon reads the keyboard read-only and does not grab it, so the
+ * compositor keeps receiving every key.
  */
 
 #define _GNU_SOURCE
@@ -51,92 +59,224 @@ static int read_int(const char *path)
 	return value;
 }
 
-static void write_led(int value)
+static int led_max(void)
+{
+	int max = read_int(LED_MAX_PATH);
+
+	return max > 0 ? max : 255;
+}
+
+static int led_read(void)
+{
+	return read_int(LED_BRIGHTNESS);
+}
+
+/* Returns the value written, or -1 if the LED could not be written. */
+static int led_write(int value)
 {
 	char buf[16];
-	int fd, len, max;
-
-	max = read_int(LED_MAX_PATH);
-	if (max <= 0)
-		max = 255;
+	int fd, len;
 
 	if (value < 0)
 		value = 0;
-	if (value > max)
-		value = max;
+	if (value > led_max())
+		value = led_max();
 
 	fd = open(LED_BRIGHTNESS, O_WRONLY);
-	if (fd < 0)
-		return;
+	if (fd < 0) {
+		fprintf(stderr,
+			"smckbd-keys: cannot write " LED_BRIGHTNESS " (%s)\n",
+			strerror(errno));
+		return -1;
+	}
 
 	len = snprintf(buf, sizeof(buf), "%d\n", value);
-	if (write(fd, buf, len) != len)
-		perror("smckbd-keys: write brightness");
+	if (write(fd, buf, len) != len) {
+		fprintf(stderr, "smckbd-keys: write %s failed (%s)\n",
+			LED_BRIGHTNESS, strerror(errno));
+		close(fd);
+		return -1;
+	}
+
 	close(fd);
+	return value;
 }
 
 /*
- * Find the event node of the internal keyboard by name. The keyboard is a USB
- * HID device whose input node carries both the keys and the trackpad, so the
- * name is the reliable part.
+ * Test one bit in a sysfs input key bitmap. The file holds 64-bit words in hex,
+ * most significant word first, space separated, so the last word holds bits
+ * 0..63. Bit 229 (KEY_KBDILLUMDOWN) therefore lives in the fourth word from the
+ * end on a keyboard that has it.
+ */
+static int bitmap_has(const char *text, unsigned int bit)
+{
+	const char *tok[32];
+	char buf[1024];
+	unsigned int word, ntok = 0;
+	unsigned long long v;
+	char *p;
+	ssize_t n;
+	int fd;
+
+	fd = open(text, O_RDONLY);
+	if (fd < 0)
+		return 0;
+
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+
+	p = buf;
+	while (*p != '\0' && ntok < 32) {
+		while (*p == ' ' || *p == '\n')
+			p++;
+		if (*p == '\0')
+			break;
+		tok[ntok++] = p;
+		while (*p != '\0' && *p != ' ' && *p != '\n')
+			p++;
+		if (*p != '\0')
+			*p++ = '\0';
+	}
+
+	word = bit / 64;
+	if (word >= ntok)
+		return 0;
+
+	v = strtoull(tok[ntok - 1 - word], NULL, 16);
+	return (int)((v >> (bit % 64)) & 1);
+}
+
+static const char *file_contains(const char *path, const char *needle,
+				 char *buf, size_t buflen)
+{
+	ssize_t n;
+	int fd;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return NULL;
+
+	n = read(fd, buf, buflen - 1);
+	close(fd);
+	if (n <= 0)
+		return NULL;
+
+	buf[n] = '\0';
+	return strstr(buf, needle) != NULL ? buf : NULL;
+}
+
+/*
+ * Find the event node that carries the illumination keys. Capabilities are the
+ * reliable part: name the keyboard, and trackpad/audio nodes never have these
+ * bits. Falls back to the device name for kernels or models where the bitmap
+ * is not what we expect.
  */
 static const char *keyboard_event(void)
 {
-	static char path[320];
-	DIR *input, *ev;
-	struct dirent *de, *evde;
+	static char path[320], name_path[320], caps_path[320], name[256];
+	DIR *dir;
+	struct dirent *de;
+	const char *fallback = NULL;
+	static char fallback_path[320];
 
-	input = opendir("/sys/class/input");
-	if (input == NULL)
+	dir = opendir("/sys/class/input");
+	if (dir == NULL)
 		return NULL;
 
-	while ((de = readdir(input)) != NULL) {
-		char name_path[320], name[256];
-		int fd;
-		ssize_t n;
+	fallback_path[0] = '\0';
 
-		if (strncmp(de->d_name, "input", 5) != 0)
+	while ((de = readdir(dir)) != NULL) {
+		if (strncmp(de->d_name, "event", 5) != 0)
 			continue;
 
-		snprintf(name_path, sizeof(name_path),
-			 "/sys/class/input/%s/name", de->d_name);
-		fd = open(name_path, O_RDONLY);
-		if (fd < 0)
-			continue;
-		n = read(fd, name, sizeof(name) - 1);
-		close(fd);
-		if (n <= 0)
-			continue;
-		name[n] = '\0';
+		snprintf(caps_path, sizeof(caps_path),
+			 "/sys/class/input/%s/device/capabilities/key",
+			 de->d_name);
 
-		if (strstr(name, KEYBOARD_NAME) == NULL)
-			continue;
-
-		snprintf(name_path, sizeof(name_path),
-			 "/sys/class/input/%s", de->d_name);
-		ev = opendir(name_path);
-		if (ev == NULL)
-			continue;
-
-		while ((evde = readdir(ev)) != NULL) {
-			if (strncmp(evde->d_name, "event", 5) != 0)
-				continue;
-
+		if (bitmap_has(caps_path, KEY_KBDILLUMUP) ||
+		    bitmap_has(caps_path, KEY_KBDILLUMDOWN)) {
 			snprintf(path, sizeof(path), "/dev/input/%s",
-				 evde->d_name);
-			closedir(ev);
-			closedir(input);
+				 de->d_name);
+			closedir(dir);
 			return path;
 		}
 
-		closedir(ev);
+		if (fallback != NULL)
+			continue;
+
+		snprintf(name_path, sizeof(name_path),
+			 "/sys/class/input/%s/device/name", de->d_name);
+		if (file_contains(name_path, KEYBOARD_NAME, name,
+				  sizeof(name)) == NULL)
+			continue;
+
+		snprintf(fallback_path, sizeof(fallback_path), "/dev/input/%s",
+			 de->d_name);
+		fallback = fallback_path;
 	}
 
-	closedir(input);
+	closedir(dir);
+
+	if (fallback != NULL) {
+		snprintf(path, sizeof(path), "%s", fallback);
+		return path;
+	}
+
 	return NULL;
 }
 
-int main(void)
+/*
+ * Apply one key. Keeps the last non-zero level so TOGGLE can restore it; in
+ * one-shot mode that state starts empty, so the first toggle turns the light on
+ * at a modest level.
+ */
+static int apply(int code, int *last)
+{
+	int cur = led_read(), target;
+
+	if (cur < 0) {
+		fprintf(stderr,
+			"smckbd-keys: cannot read " LED_BRIGHTNESS
+			" (%s) - is the smckbd module loaded?\n",
+			strerror(errno));
+		return -1;
+	}
+
+	switch (code) {
+	case KEY_KBDILLUMUP:
+		if (cur > 0)
+			*last = cur;
+		target = cur + STEP;
+		break;
+	case KEY_KBDILLUMDOWN:
+		if (cur > 0)
+			*last = cur;
+		target = cur - STEP;
+		break;
+	case KEY_KBDILLUMTOGGLE:
+		if (cur > 0) {
+			*last = cur;
+			target = 0;
+		} else {
+			target = *last > 0 ? *last : 64;
+		}
+		break;
+	default:
+		return 0;
+	}
+
+	target = led_write(target);
+	if (target >= 0)
+		fprintf(stderr, "smckbd-keys: %d -> %d\n", cur, target);
+
+	return target;
+}
+
+/* Not "daemon": that name is taken by unistd.h's daemon(3). */
+static void watch_keys(void)
 {
 	int fd = -1, last = -1;
 
@@ -153,7 +293,9 @@ int main(void)
 
 			fd = open(path, O_RDONLY);
 			if (fd < 0) {
-				perror("smckbd-keys: open keyboard");
+				fprintf(stderr,
+					"smckbd-keys: open %s failed (%s)\n",
+					path, strerror(errno));
 				sleep(2);
 				continue;
 			}
@@ -170,36 +312,41 @@ int main(void)
 		if (ev.type != EV_KEY || ev.value != 1)
 			continue;
 
-		switch (ev.code) {
-		case KEY_KBDILLUMUP: {
-			int cur = read_int(LED_BRIGHTNESS);
-
-			if (cur > 0)
-				last = cur;
-			write_led((cur < 0 ? 0 : cur) + STEP);
-			break;
-		}
-		case KEY_KBDILLUMDOWN: {
-			int cur = read_int(LED_BRIGHTNESS);
-
-			if (cur > 0)
-				last = cur;
-			write_led((cur < 0 ? 0 : cur) - STEP);
-			break;
-		}
-		case KEY_KBDILLUMTOGGLE: {
-			int cur = read_int(LED_BRIGHTNESS);
-
-			if (cur > 0) {
-				last = cur;
-				write_led(0);
-			} else {
-				write_led(last > 0 ? last : 64);
-			}
-			break;
-		}
-		default:
-			break;
-		}
+		apply(ev.code, &last);
 	}
+}
+
+int main(int argc, char **argv)
+{
+	int last = -1;
+
+	if (argc > 1) {
+		static const struct {
+			const char *name;
+			int code;
+		} modes[] = {
+			{ "up", KEY_KBDILLUMUP },
+			{ "down", KEY_KBDILLUMDOWN },
+			{ "toggle", KEY_KBDILLUMTOGGLE },
+		};
+		size_t i;
+
+		if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)
+			goto usage;
+
+		for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+			if (strcmp(argv[1], modes[i].name) == 0)
+				return apply(modes[i].code, &last) < 0 ? 1 : 0;
+		}
+
+usage:
+		fprintf(stderr,
+			"usage: smckbd-keys [up|down|toggle]\n"
+			"       with no argument: stay in the foreground and watch the keyboard\n");
+		return argc > 1 && strcmp(argv[1], "--help") != 0 &&
+		       strcmp(argv[1], "-h") != 0 ? 2 : 0;
+	}
+
+	watch_keys();
+	return 0;
 }

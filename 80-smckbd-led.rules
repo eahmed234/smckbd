@@ -1,0 +1,9 @@
+# Let the desktop session drive the Apple keyboard backlight without root, so
+# "smckbd-keys up|down|toggle" works from a compositor key binding.
+#
+# GROUP/MODE do nothing here: an LED class device has no /dev node, and udev
+# applies rule permissions to device nodes, not to sysfs attributes. The
+# attribute is fixed up explicitly instead, which is also how the classic
+# backlight recipes work. Only "brightness" is opened up; max_brightness stays
+# root-only, and writes are still clamped to it by the LED core.
+SUBSYSTEM=="leds", KERNEL=="smc::kbd_backlight", RUN+="/usr/bin/chgrp video /sys/class/leds/%k/brightness", RUN+="/usr/bin/chmod 0664 /sys/class/leds/%k/brightness"

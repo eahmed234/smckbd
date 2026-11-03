@@ -69,29 +69,80 @@ Having the LED is not enough: something has to translate `KEY_KBDILLUMDOWN` and
 environments do that for hardware they know; a bare compositor does not, and
 then the keys do nothing.
 
-`smckbd-keys` is a small root daemon for that. It reads the internal keyboard
-read-only (it does not grab it, so the compositor keeps the keys), steps the
-backlight by 32 on each press, and toggles on `KEY_KBDILLUMTOGGLE`.
+The keysym your compositor sees is `XF86KbdBrightnessDown` /
+`XF86KbdBrightnessUp`. `smckbd-keys` handles them in two ways.
+
+### One shot, from the session config
+
+Use the **keyboard** keysyms. `XF86MonBrightnessUp`/`Down` are the *display*
+backlight and must keep their screen-brightness action; binding them to
+`smckbd-keys` leaves F5/F6 dead and makes the screen keys drive the keyboard.
+
+Umbriel, which is what the Noctalia shell runs on, binding all four:
+
+```toml
+[keybinds]
+"XF86MonBrightnessUp"   = { action = "spawn noctalia msg brightness-up",   allow_when_locked = true }
+"XF86MonBrightnessDown" = { action = "spawn noctalia msg brightness-down", allow_when_locked = true }
+"XF86KbdBrightnessUp"   = { action = "spawn smckbd-keys up",   allow_when_locked = true }
+"XF86KbdBrightnessDown" = { action = "spawn smckbd-keys down", allow_when_locked = true }
+```
+
+Other compositors use the same keysym names (`XF86KbdBrightnessUp` /
+`XF86KbdBrightnessDown`, from the `inet` section of the XKB rules, which applies
+to every layout). Check the config with `umbriel config validate`: an unknown
+keysym name is reported as a diagnostic.
+
+This needs no root: `80-smckbd-led.rules` gives the `video` group write access
+to the backlight. Check your user is in it (`id -nG`), and that the rule is in
+place (`/usr/lib/udev/rules.d/80-smckbd-led.rules`, from the package). Applied
+by hand, the rule needs one reload:
 
 ```sh
-sudo systemctl start smckbd-keys.service     # installed and enabled by the package
+sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=leds
+ls -l /sys/class/leds/smc::kbd_backlight/brightness    # -rw-rw-r-- root video
+```
+
+The rule uses `RUN+=` with `chgrp`/`chmod` rather than `GROUP=`/`MODE=`: an LED
+class device has no `/dev` node, and udev only applies those keys to device
+nodes, never to sysfs attributes. Same reason the classic backlight recipes do.
+
+### Daemon, for sessions with no key binding
+
+`smckbd-keys` with no argument watches the keyboard and applies every press,
+for compositors that never route the keysyms. It reads the keyboard read-only
+and does not grab it, so the compositor keeps every key. It runs as root, so it
+works with or without the udev rule.
+
+The package installs the unit but leaves it disabled, because the two modes are
+alternatives: with key bindings in place a running daemon would step the
+backlight a second time for the same press. Enable it only if you have no
+bindings:
+
+```sh
+sudo systemctl enable --now smckbd-keys.service
 ```
 
 Without the package, from a build tree:
 
 ```sh
-make keys && sudo ./smckbd-keys
+make keys && sudo ./smckbd-keys       # prints each change: 150 -> 182
 ```
 
-If pressing F5/F6 still does nothing, check the keys reach userspace:
+Each press steps by 32 of 255; `KEY_KBDILLUMTOGGLE` turns the light off and
+back to the previous level.
+
+### If nothing happens
+
+Check the keys reach userspace at all:
 
 ```sh
-sudo evtest /dev/input/event4      # the event node with the Apple keyboard name
+sudo evtest /dev/input/event6      # the node whose name has "Apple Internal Keyboard"
 ```
 
-`KEY_KBDILLUMDOWN` / `KEY_KBDILLUMUP` on a press means the daemon will handle
-them; `KEY_F5` / `KEY_F6` means the keyboard is in plain-function mode (try Fn,
-or adjust `hid_apple.fnmode`).
+`KEY_KBDILLUMDOWN` (229) / `KEY_KBDILLUMUP` (230) on a press means the helper
+can act on them; `KEY_F5` / `KEY_F6` means the keyboard is in plain-function
+mode (try Fn, or adjust `hid_apple.fnmode`).
 
 ## Notes
 

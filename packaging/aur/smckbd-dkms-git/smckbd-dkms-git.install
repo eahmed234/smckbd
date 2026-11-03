@@ -3,11 +3,24 @@ post_install() {
 smckbd is built by DKMS for every installed kernel 7.3 and newer. Older
 kernels keep applesmc, which already provides smc::kbd_backlight.
 
-The units are enabled but not started here: the DKMS hook may not have built
-the module yet. Start them once, or reboot:
-  sudo systemctl start smckbd.service smckbd-keys.service
+smckbd.service (module load) is enabled but not started here: the DKMS hook may
+not have built the module yet. Start it once, or reboot:
+  sudo systemctl start smckbd.service
 
-smckbd-keys is the daemon behind the F5/F6 keys; it needs smckbd loaded.
+For the F5/F6 keys pick ONE of these:
+
+  a) bind them in your session, no root needed (recommended):
+       XF86KbdBrightnessUp   -> smckbd-keys up
+       XF86KbdBrightnessDown -> smckbd-keys down
+     Note XF86MonBrightnessUp/Down are the display keys - leave those alone.
+
+  b) no key bindings? run the watcher instead, as root:
+       sudo systemctl enable --now smckbd-keys.service
+     Do not do both: a running daemon plus bindings steps the backlight twice.
+
+The udev rule smckbd-led.rules gives the video group write access to the
+backlight, so the bound commands need no root; make sure your user is in
+"video".
 
 Check it:
   ls -l /sys/class/leds/ | grep kbd_backlight
@@ -15,7 +28,9 @@ Check it:
 EOF
 
   if [ -d /run/systemd/system ]; then
-    systemctl enable smckbd.service smckbd-keys.service >/dev/null 2>&1 || true
+    systemctl enable smckbd.service >/dev/null 2>&1 || true
+    udevadm control --reload >/dev/null 2>&1 || true
+    udevadm trigger --subsystem-match=leds >/dev/null 2>&1 || true
   fi
 }
 
